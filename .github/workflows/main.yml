@@ -1,0 +1,35 @@
+name: Ngrok Test
+
+on:
+  workflow_dispatch:  # Manual trigger for testing
+
+jobs:
+  ngrok-tunnel:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y wget unzip curl jq openssh-client
+
+      - name: Download Ngrok
+        run: |
+          wget -q -O ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+          tar -xzf ngrok.tgz
+          chmod +x ngrok
+
+      - name: Authenticate Ngrok
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}  # store your token as GitHub Secret
+        run: ./ngrok config add-authtoken $NGROK_TOKEN
+
+      - name: Start Ngrok TCP tunnel
+        run: |
+          nohup ./ngrok tcp 22 --log=stdout > ngrok.log 2>&1 &
+          sleep 5  # wait a bit for Ngrok to initialize
+          TUNNEL_URL=$(curl -s localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url')
+          echo "Ngrok URL: $TUNNEL_URL"
