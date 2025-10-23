@@ -1,70 +1,78 @@
-name: Create VPS with Ngrok (Fixed)
+name: Create VPS
+
+permissions:
+  contents: write     # ✅ Allow GitHub Actions to push commits
 
 on:
-  workflow_dispatch:
-  repository_dispatch:
+  workflow_dispatch:   # Manual trigger
+  repository_dispatch: # Optional API trigger
     types: [create-vps]
 
 jobs:
   start-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours max
-
-    env:
-      NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+    timeout-minutes: 360  # Keep VPS alive for up to 6 hours
 
     steps:
       - name: ⬇️ Checkout repository
         uses: actions/checkout@v3
 
-      - name: 📁 Prepare directories
+      - name: 📁 Create directories
         run: mkdir -p links .backup
 
-      - name: 🔧 Install and configure SSH
+      - name: 💾 Restore previous backup (optional)
         run: |
-          sudo apt-get update -y -qq
-          sudo apt-get install -y -qq openssh-server wget unzip curl jq
-          echo "root:root" | sudo chpasswd
-          sudo mkdir -p /var/run/sshd
-          sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo service ssh restart || sudo /etc/init.d/ssh start
-
-      - name: ⬇️ Download Ngrok binary
-        run: |
-          wget -q -O ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar -xzf ngrok.tgz
-          chmod +x ngrok
-
-      - name: 🔑 Authenticate Ngrok
-        run: ./ngrok config add-authtoken "$NGROK_TOKEN"
-
-      - name: 🚀 Start Ngrok TCP tunnel
-        run: |
-          nohup ./ngrok tcp 22 --log=stdout > ngrok.log 2>&1 &
-          echo "⏳ Waiting for Ngrok tunnel..."
-          sleep 5
-          curl -s localhost:4040/api/tunnels > tunnels.json || true
-          cat tunnels.json || echo "No tunnel data found yet."
-          TUNNEL_URL=$(jq -r '.tunnels[0].public_url' tunnels.json 2>/dev/null)
-          if [[ "$TUNNEL_URL" == tcp* ]]; then
-            HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d':' -f1)
-            PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d':' -f2)
-            echo "✅ SSH Ready via Ngrok:"
-            echo "ssh root@$HOST -p $PORT (password: root)"
-            echo "ssh root@$HOST -p $PORT (password: root)" > links/vps-ssh.txt
-          else
-            echo "❌ Ngrok tunnel failed to start. Showing logs:"
-            tail -n 20 ngrok.log
+          name="${{ github.event.client_payload.vps_name }}"
+          if [ "${{ github.event.client_payload.backup }}" == "true" ]; then
+            echo "📦 Restoring backup..."
+            unzip ".backup/$name.zip" -d . || echo "⚠️ No backup to restore."
           fi
 
-      - name: 📤 Commit SSH info
+      - name: 🔐 Set root password & enable SSH
+        run: |
+          echo "root:root" | sudo chpasswd
+          sudo mkdir -p /var/run/sshd
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo service ssh restart
+
+      - name: 🌐 Install Ngrok
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+        run: |
+          curl -s https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip -o ngrok.zip
+          unzip ngrok.zip
+          sudo mv ngrok /usr/local/bin/
+          ngrok authtoken $NGROK_TOKEN
+
+      - name: 🚀 Start Ngrok tunnel
+        run: |
+          nohup ngrok tcp 22 --log=stdout > ngrok.log 2>&1 &
+          echo "⏳ Waiting for Ngrok tunnel..."
+          sleep 5
+          cat ngrok.log | grep -Eo "tcp://[0-9a-zA-Z\.-]+:[0-9]+" | tail -n 1 > tunnel.txt
+          if [ ! -s tunnel.txt ]; then
+            echo "❌ Ngrok tunnel not found!"
+            exit 1
+          fi
+          TUNNEL=$(cat tunnel.txt)
+          echo "✅ SSH Ready via Ngrok:"
+          echo "ssh root@${TUNNEL#tcp://} (password: root)"
+          echo "ssh root@${TUNNEL#tcp://} (password: root)" > "links/vps-ssh.txt"
+
+      - name: 💾 Save backup
+        run: |
+          name="${{ github.event.client_payload.vps_name || 'manual-vps' }}"
+          zip -r ".backup/$name.zip" . -x ".git/*" ".github/*" ".backup/*" || true
+
+      - name: 📤 Commit and push SSH info
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "🔁 Updated SSH Ngrok tunnel info"
-          file_pattern: 'links/*.txt'
+          file_pattern: 'links/*.txt .backup/*.zip'
+          commit_author: ItzJoker2YT <218676716+ItzJoker2YT@users.noreply.github.com>
 
-      - name: ⏳ Keep VPS alive for 6 hours
+      - name: ⏳ Keep VPS session alive
         run: |
-          echo "🕒 VPS session active. Will auto-stop after 6 hours."
+          echo "⏳ VPS active for 6 hours..."
           sleep $((360 * 60))
