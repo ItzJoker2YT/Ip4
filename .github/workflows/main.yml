@@ -1,61 +1,40 @@
-name: Ngrok SSH Tunnel
+name: Create VPS with Ngrok
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [create-vps]
 
 jobs:
-  ngrok-tunnel:
+  start-vps:
     runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 hours max
+
+    env:
+      NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}  # ⚠️ Set your Ngrok token in GitHub secrets
+
     steps:
+      - name: ⬇️ Checkout
+        uses: actions/checkout@v3
 
-    - name: Checkout repository
-      uses: actions/checkout@v3
+      - name: 📁 Create dirs
+        run: mkdir -p links .backup
 
-    - name: Install dependencies
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y wget unzip curl jq openssh-server
-
-    - name: Configure SSH
-      run: |
-        echo "root:root" | sudo chpasswd
-        sudo mkdir -p /var/run/sshd
-        sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-        sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-        sudo service ssh restart || sudo /etc/init.d/ssh start
-
-    - name: Download and setup Ngrok
-      env:
-        NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-      run: |
-        wget -q -O ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-        tar -xzf ngrok.tgz
-        chmod +x ngrok
-        ./ngrok config add-authtoken $NGROK_TOKEN
-
-    - name: Start Ngrok SSH tunnel
-      run: |
-        nohup ./ngrok tcp 22 --log=stdout > ngrok.log 2>&1 &
-        echo "⏳ Waiting for tunnel to initialize..."
-        for i in {1..30}; do
-          sleep 2
-          TUNNEL_URL=$(curl -s localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' 2>/dev/null)
-          if [[ "$TUNNEL_URL" == tcp* ]]; then
-            break
+      - name: 💾 Restore backup
+        run: |
+          name="${{ github.event.client_payload.vps_name }}"
+          if [ "${{ github.event.client_payload.backup }}" == "true" ]; then
+            echo "📦 Restoring backup..."
+            unzip ".backup/$name.zip" -d . || echo "⚠️ No backup to restore."
           fi
-          echo "Waiting ($i/30)..."
-        done
-        if [[ "$TUNNEL_URL" == tcp* ]]; then
-          HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d':' -f1)
-          PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d':' -f2)
-          echo "✅ SSH Tunnel Active!"
-          echo "🔗 Command: ssh root@$HOST -p $PORT"
-          echo "🔑 Password: root"
-        else
-          echo "❌ Ngrok failed to start. Last 15 lines:"
-          tail -n 15 ngrok.log
-          exit 1
-        fi
 
-    - name: Keep tunnel alive for 6 hours
-      run: sleep 21600
+      - name: 🔐 Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y openssh-server wget unzip curl jq
+
+      - name: 🔧 Configure SSH
+        run: |
+          echo "root:root" | sudo chpasswd
+          sudo mkdir -p /var/run/sshd
+          sudo sed -
