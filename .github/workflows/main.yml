@@ -6,62 +6,56 @@ on:
 jobs:
   ngrok-tunnel:
     runs-on: ubuntu-latest
-    timeout-minutes: 360  # 6 hours
-
-    env:
-      NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y openssh-server wget unzip curl jq
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Configure SSH
-        run: |
-          echo "root:root" | sudo chpasswd
-          sudo mkdir -p /var/run/sshd
-          sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
-          sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
-          sudo service ssh restart || sudo /etc/init.d/ssh start
+    - name: Install dependencies
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y wget unzip curl jq openssh-server
 
-      - name: Install Ngrok
-        run: |
-          wget -q -O ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
-          tar -xzf ngrok.tgz
-          chmod +x ngrok
+    - name: Configure SSH
+      run: |
+        echo "root:root" | sudo chpasswd
+        sudo mkdir -p /var/run/sshd
+        sudo sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+        sudo sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        sudo service ssh restart || sudo /etc/init.d/ssh start
 
-      - name: Authenticate Ngrok
-        run: ./ngrok config add-authtoken $NGROK_TOKEN
+    - name: Download and setup Ngrok
+      env:
+        NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+      run: |
+        wget -q -O ngrok.tgz https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
+        tar -xzf ngrok.tgz
+        chmod +x ngrok
+        ./ngrok config add-authtoken $NGROK_TOKEN
 
-      - name: Start SSH tunnel and show info
-        run: |
-          nohup ./ngrok tcp 22 --log=stdout > ngrok.log 2>&1 &
-          echo "⏳ Waiting for Ngrok tunnel..."
-          for i in {1..30}; do
-            sleep 2
-            TUNNEL_URL=$(curl -s localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' 2>/dev/null)
-            if [[ "$TUNNEL_URL" == tcp* ]]; then
-              break
-            fi
-            echo "Waiting $i/30..."
-          done
+    - name: Start Ngrok SSH tunnel
+      run: |
+        nohup ./ngrok tcp 22 --log=stdout > ngrok.log 2>&1 &
+        echo "⏳ Waiting for tunnel to initialize..."
+        for i in {1..30}; do
+          sleep 2
+          TUNNEL_URL=$(curl -s localhost:4040/api/tunnels | jq -r '.tunnels[0].public_url' 2>/dev/null)
           if [[ "$TUNNEL_URL" == tcp* ]]; then
-            HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d':' -f1)
-            PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d':' -f2)
-            echo "✅ SSH Tunnel Active!"
-            echo "--------------------------------------"
-            echo "🔗 Command: ssh root@$HOST -p $PORT"
-            echo "🔑 Password: root"
-            echo "--------------------------------------"
-            echo "🕒 Tunnel will run for 6 hours"
-          else
-            echo "❌ Ngrok failed to start. Last 15 log lines:"
-            tail -n 15 ngrok.log
+            break
           fi
+          echo "Waiting ($i/30)..."
+        done
+        if [[ "$TUNNEL_URL" == tcp* ]]; then
+          HOST=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d':' -f1)
+          PORT=$(echo "$TUNNEL_URL" | sed 's/tcp:\/\///' | cut -d':' -f2)
+          echo "✅ SSH Tunnel Active!"
+          echo "🔗 Command: ssh root@$HOST -p $PORT"
+          echo "🔑 Password: root"
+        else
+          echo "❌ Ngrok failed to start. Last 15 lines:"
+          tail -n 15 ngrok.log
+          exit 1
+        fi
 
-      - name: Keep tunnel alive
-        run: sleep 21600  # 6 hours in seconds
+    - name: Keep tunnel alive for 6 hours
+      run: sleep 21600
